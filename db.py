@@ -82,6 +82,11 @@ def set_text_checked(item_id: int, checked: bool) -> None:
     client.table("text_items").update({"checked": checked}).eq("id", item_id).execute()
 
 
+def update_text_item(item_id: int, content: str) -> None:
+    client = get_client()
+    client.table("text_items").update({"content": content.strip()}).eq("id", item_id).execute()
+
+
 def delete_text_item(item_id: int) -> None:
     client = get_client()
     client.table("text_items").delete().eq("id", item_id).execute()
