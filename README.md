@@ -84,9 +84,20 @@ SUPABASE_KEY = "YOUR_SERVICE_ROLE_KEY"
 ## 사용 방법
 
 1. 비밀번호 입력 후 입장
-2. 왼쪽에서 카테고리 추가·선택
-3. **텍스트** 탭: 한 줄 입력 → 체크 / 삭제
-4. **사진** 탭: 업로드·보기·삭제
+2. 상단에서 장소(카테고리) 추가 — 예: 편의점, 마트
+3. 장소 탭에서 **물품** 추가 (이름 필수, 사진 선택)
+4. 목록: 체크 + 이름 + (있으면) **사진** 버튼
+5. **편집**에서 이름·사진 변경/삭제
+
+## Supabase 스키마 갱신 (이미 만든 프로젝트)
+
+SQL Editor에서 한 줄 실행:
+
+```sql
+alter table text_items add column if not exists storage_path text;
+```
+
+또는 [`supabase_schema.sql`](supabase_schema.sql) 전체를 다시 실행해도 됩니다.
 
 ## 프로젝트 구조
 
