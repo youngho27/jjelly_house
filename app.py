@@ -122,19 +122,19 @@ st.markdown(
         flex-shrink: 0;
       }
 
+      /* Never force side-by-side — prevents buttons escaping off-screen */
       div[data-testid="stHorizontalBlock"] {
-        flex-wrap: nowrap !important;
-        align-items: center !important;
-        gap: 0.3rem !important;
         width: 100% !important;
         max-width: 100% !important;
       }
       div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
         min-width: 0 !important;
-      }
-      div[data-testid="column"] .stButton,
-      div[data-testid="column"] .stButton > button {
         width: 100% !important;
+      }
+
+      /* Compact secondary buttons (photo) */
+      .stButton > button[kind="secondary"] {
+        min-height: 2.2rem !important;
       }
 
       /* Tighter file uploader on mobile */
@@ -212,6 +212,15 @@ def sort_shopping_items(items: list[dict]) -> list[dict]:
 
 def render_items(category_id: int) -> None:
     edit_key = f"edit_mode_{category_id}"
+    reset_key = f"reset_add_{category_id}"
+
+    # Clear add inputs BEFORE widgets are created (avoids Streamlit session_state error)
+    if st.session_state.pop(reset_key, False):
+        name_nonce = st.session_state.get(f"name_nonce_{category_id}", 0) + 1
+        photo_nonce = st.session_state.get(f"photo_nonce_{category_id}", 0) + 1
+        st.session_state[f"name_nonce_{category_id}"] = name_nonce
+        st.session_state[f"photo_nonce_{category_id}"] = photo_nonce
+
     editing = st.session_state.get(edit_key, False)
     label = "편집 완료" if editing else "편집"
     if st.button(label, use_container_width=True, key=f"toggle_edit_{category_id}"):
@@ -222,13 +231,14 @@ def render_items(category_id: int) -> None:
 
     # Add form only when not editing (less scroll on phone)
     if not editing:
+        name_nonce = st.session_state.setdefault(f"name_nonce_{category_id}", 0)
+        photo_nonce = st.session_state.setdefault(f"photo_nonce_{category_id}", 0)
         name = st.text_input(
             "물품",
             placeholder="살 물건 이름",
-            key=f"new_item_name_{category_id}",
+            key=f"new_item_name_{category_id}_{name_nonce}",
             label_visibility="collapsed",
         )
-        photo_nonce = st.session_state.setdefault(f"photo_nonce_{category_id}", 0)
         photo = st.file_uploader(
             "사진",
             type=["jpg", "jpeg", "png", "webp", "gif"],
@@ -251,8 +261,7 @@ def render_items(category_id: int) -> None:
                         )
                     else:
                         db.add_item(category_id, content)
-                    st.session_state[f"new_item_name_{category_id}"] = ""
-                    st.session_state[f"photo_nonce_{category_id}"] = photo_nonce + 1
+                    st.session_state[reset_key] = True
                     st.rerun()
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
@@ -292,56 +301,41 @@ def render_items(category_id: int) -> None:
                 key=f"edit_photo_{item['id']}",
                 label_visibility="collapsed",
             )
-            btn_cols = st.columns(2, gap="small")
-            with btn_cols[0]:
-                if st.button("저장", key=f"save_{item['id']}", use_container_width=True, type="primary"):
-                    content = (new_content or "").strip()
-                    if not content:
-                        st.warning("물품 이름은 필수입니다.")
-                    else:
-                        try:
-                            db.update_item(
-                                item["id"],
-                                content,
-                                new_photo_name=new_photo.name if new_photo else None,
-                                new_photo_data=new_photo.getvalue() if new_photo else None,
-                                new_photo_type=(new_photo.type if new_photo else None),
-                                remove_photo=bool(remove_photo) and new_photo is None,
-                                category_id=category_id,
-                                old_storage_path=path,
-                            )
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"저장 실패: {e}")
-            with btn_cols[1]:
-                if st.button("삭제", key=f"del_{item['id']}", use_container_width=True):
-                    db.delete_item(item["id"], path)
-                    st.rerun()
+            if st.button("저장", key=f"save_{item['id']}", use_container_width=True, type="primary"):
+                content = (new_content or "").strip()
+                if not content:
+                    st.warning("물품 이름은 필수입니다.")
+                else:
+                    try:
+                        db.update_item(
+                            item["id"],
+                            content,
+                            new_photo_name=new_photo.name if new_photo else None,
+                            new_photo_data=new_photo.getvalue() if new_photo else None,
+                            new_photo_type=(new_photo.type if new_photo else None),
+                            remove_photo=bool(remove_photo) and new_photo is None,
+                            category_id=category_id,
+                            old_storage_path=path,
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+            if st.button("삭제", key=f"del_{item['id']}", use_container_width=True):
+                db.delete_item(item["id"], path)
+                st.rerun()
             st.divider()
         else:
+            checked = st.checkbox(
+                item["content"],
+                value=bool(item["checked"]),
+                key=f"chk_{item['id']}",
+            )
+            if checked != bool(item["checked"]):
+                db.set_item_checked(item["id"], checked)
+                st.rerun()
             if path:
-                row = st.columns([0.82, 0.18], gap="small", vertical_alignment="center")
-                with row[0]:
-                    checked = st.checkbox(
-                        item["content"],
-                        value=bool(item["checked"]),
-                        key=f"chk_{item['id']}",
-                    )
-                    if checked != bool(item["checked"]):
-                        db.set_item_checked(item["id"], checked)
-                        st.rerun()
-                with row[1]:
-                    if st.button("📷", key=f"view_{item['id']}", use_container_width=True):
-                        show_photo_dialog(db.photo_public_url(path), item["content"])
-            else:
-                checked = st.checkbox(
-                    item["content"],
-                    value=bool(item["checked"]),
-                    key=f"chk_{item['id']}",
-                )
-                if checked != bool(item["checked"]):
-                    db.set_item_checked(item["id"], checked)
-                    st.rerun()
+                if st.button("📷 사진 보기", key=f"view_{item['id']}", use_container_width=True):
+                    show_photo_dialog(db.photo_public_url(path), item["content"])
 
 
 def render_category_tools(category: dict) -> None:
@@ -353,13 +347,12 @@ def render_category_tools(category: dict) -> None:
 
         if st.session_state.get(f"confirm_del_cat_{cid}"):
             st.warning("정말 삭제할까요?")
-            c1, c2 = st.columns(2, gap="small")
-            if c1.button("삭제", type="primary", use_container_width=True, key=f"del_ok_{cid}"):
+            if st.button("삭제", type="primary", use_container_width=True, key=f"del_ok_{cid}"):
                 db.delete_category(cid)
                 st.session_state.pop(f"confirm_del_cat_{cid}", None)
                 st.session_state.pop("selected_category", None)
                 st.rerun()
-            if c2.button("취소", use_container_width=True, key=f"del_cancel_{cid}"):
+            if st.button("취소", use_container_width=True, key=f"del_cancel_{cid}"):
                 st.session_state.pop(f"confirm_del_cat_{cid}", None)
                 st.rerun()
 
