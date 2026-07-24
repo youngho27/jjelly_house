@@ -140,3 +140,48 @@ def delete_item(item_id: int, storage_path: str | None = None) -> None:
 
 def photo_public_url(storage_path: str) -> str:
     return get_client().storage.from_("photos").get_public_url(storage_path)
+
+
+# --- Calculator / expenses ---
+
+def list_expenses() -> list[dict[str, Any]]:
+    client = get_client()
+    result = (
+        client.table("expenses")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def add_expense(title: str, amount: int, category: str) -> dict[str, Any] | None:
+    client = get_client()
+    result = (
+        client.table("expenses")
+        .insert(
+            {
+                "title": title.strip(),
+                "amount": int(amount),
+                "category": category,
+            }
+        )
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def delete_expense(expense_id: int) -> None:
+    get_client().table("expenses").delete().eq("id", expense_id).execute()
+
+
+def update_expense(
+    expense_id: int, title: str, amount: int, category: str
+) -> None:
+    get_client().table("expenses").update(
+        {
+            "title": title.strip(),
+            "amount": int(amount),
+            "category": category,
+        }
+    ).eq("id", expense_id).execute()
