@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import html as html_lib
+import time
+
 import streamlit as st
+import streamlit.components.v1 as components
 
 import db
 
@@ -12,6 +18,10 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+AUTH_COOKIE = "jj_auth"
+AUTH_DAYS = 30
+EXPENSE_CATEGORIES = ["식당", "카페", "편의점", "쇼핑1", "쇼핑2"]
 
 st.markdown(
     """
@@ -49,6 +59,49 @@ st.markdown(
       .block-container {
         padding: 0.6rem 0.75rem 3.5rem 0.75rem !important;
         max-width: 480px;
+        overflow-x: hidden !important;
+      }
+
+      /* Prevent any wide content from sideways scroll on phone */
+      .stApp, .main, [data-testid="stAppViewContainer"] {
+        overflow-x: hidden !important;
+      }
+
+      .jj-calc-item {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.65rem 0.75rem;
+        margin: 0.4rem 0;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+      .jj-calc-item .cat {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin: 0 0 0.15rem 0;
+      }
+      .jj-calc-item .name {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin: 0;
+        color: var(--ink);
+      }
+      .jj-calc-item .amt {
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin: 0.2rem 0 0 0;
+        color: var(--ink);
+      }
+      .jj-calc-item.muted .name,
+      .jj-calc-item.muted .amt {
+        opacity: 0.45;
+      }
+      .jj-total {
+        font-size: 1.35rem;
+        font-weight: 700;
+        margin: 0.4rem 0 0.8rem 0;
+        word-break: break-word;
       }
 
       .jj-brand {
@@ -171,8 +224,107 @@ def show_photo_dialog(url: str, title: str) -> None:
     st.image(url, use_container_width=True)
 
 
-def require_login() -> bool:
+def _auth_secret() -> str:
+    return str(st.secrets.get("APP_PASSWORD", "jjellys"))
+
+
+def make_auth_token(days: int = AUTH_DAYS) -> str:
+    """Signed login token that survives Streamlit session reconnects."""
+    exp = int(time.time()) + days * 24 * 3600
+    payload = f"jjellys:{exp}"
+    sig = hmac.new(_auth_secret().encode(), payload.encode(), hashlib.sha256).hexdigest()[:40]
+    return f"{exp}.{sig}"
+
+
+def verify_auth_token(token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    try:
+        exp_s, sig = token.split(".", 1)
+        exp = int(exp_s)
+        if time.time() > exp:
+            return False
+        payload = f"jjellys:{exp}"
+        expect = hmac.new(
+            _auth_secret().encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()[:40]
+        return hmac.compare_digest(sig, expect)
+    except Exception:
+        return False
+
+
+def _token_from_query() -> str | None:
+    value = st.query_params.get("auth")
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _token_from_cookie() -> str | None:
+    try:
+        return st.context.cookies.get(AUTH_COOKIE)
+    except Exception:
+        return None
+
+
+def persist_login(token: str) -> None:
+    st.query_params["auth"] = token
+    # Set on parent page (iframe document.cookie would not stick)
+    max_age = AUTH_DAYS * 24 * 3600
+    components.html(
+        f"""
+        <script>
+        try {{
+          window.parent.document.cookie =
+            "{AUTH_COOKIE}={token}; max-age={max_age}; path=/; SameSite=Lax";
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def clear_login() -> None:
+    try:
+        if "auth" in st.query_params:
+            del st.query_params["auth"]
+    except Exception:
+        pass
+    components.html(
+        f"""
+        <script>
+        try {{
+          window.parent.document.cookie =
+            "{AUTH_COOKIE}=; max-age=0; path=/; SameSite=Lax";
+        }} catch (e) {{}}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def restore_login() -> bool:
+    """Restore auth after phone background / websocket reconnect."""
     if st.session_state.get("authenticated"):
+        # Keep URL token fresh so reconnects stay logged in
+        if not _token_from_query() and st.session_state.get("auth_token"):
+            st.query_params["auth"] = st.session_state.auth_token
+        return True
+
+    token = _token_from_query() or _token_from_cookie()
+    if verify_auth_token(token):
+        st.session_state.authenticated = True
+        st.session_state.auth_token = token
+        if _token_from_query() != token:
+            st.query_params["auth"] = token
+        return True
+    return False
+
+
+def require_login() -> bool:
+    if restore_login():
         return True
 
     st.markdown('<p class="jj-brand">jjellys</p>', unsafe_allow_html=True)
@@ -189,7 +341,10 @@ def require_login() -> bool:
     if st.button("들어가기", type="primary", use_container_width=True):
         expected = st.secrets.get("APP_PASSWORD", "")
         if password and password == expected:
+            token = make_auth_token()
             st.session_state.authenticated = True
+            st.session_state.auth_token = token
+            persist_login(token)
             st.rerun()
         else:
             st.error("비밀번호가 올바르지 않습니다.")
@@ -338,6 +493,178 @@ def render_items(category_id: int) -> None:
                     show_photo_dialog(db.photo_public_url(path), item["content"])
 
 
+def parse_amount(raw: str) -> int | None:
+    """'1200', '1,200', '1200원' → int. Invalid → None."""
+    if raw is None:
+        return None
+    cleaned = (
+        str(raw)
+        .strip()
+        .replace(",", "")
+        .replace("원", "")
+        .replace(" ", "")
+    )
+    if not cleaned:
+        return None
+    try:
+        value = int(float(cleaned))
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def format_won(amount: int | float) -> str:
+    return f"{int(amount):,}원"
+
+
+def render_calculator() -> None:
+    st.markdown("##### 계산기")
+
+    # Category filters for sum (checked = include in total)
+    st.caption("합산에 포함할 카테고리")
+    active: list[str] = []
+    for cat in EXPENSE_CATEGORIES:
+        key = f"calc_sum_{cat}"
+        if key not in st.session_state:
+            st.session_state[key] = True
+        if st.checkbox(cat, key=key):
+            active.append(cat)
+
+    try:
+        expenses = db.list_expenses()
+    except Exception as e:
+        st.error(
+            "지출 목록을 불러오지 못했습니다. Supabase SQL Editor에서 "
+            "`expenses` 테이블 생성 SQL을 실행했는지 확인하세요.\n\n"
+            f"{e}"
+        )
+        return
+
+    included = [e for e in expenses if e.get("category") in active]
+    total = sum(int(e.get("amount") or 0) for e in included)
+    st.markdown(
+        f'<p class="jj-total">합계 {format_won(total)}</p>',
+        unsafe_allow_html=True,
+    )
+    if active:
+        st.caption("체크된 카테고리만 합산 중")
+    else:
+        st.caption("카테고리를 하나 이상 체크하세요.")
+
+    edit_key = "calc_edit_mode"
+    editing = st.session_state.get(edit_key, False)
+    label = "편집 완료" if editing else "편집"
+    if st.button(label, use_container_width=True, key="calc_toggle_edit"):
+        st.session_state[edit_key] = not editing
+        st.rerun()
+    editing = st.session_state.get(edit_key, False)
+
+    reset_key = "calc_reset_add"
+    if st.session_state.pop(reset_key, False):
+        st.session_state["calc_name_nonce"] = st.session_state.get("calc_name_nonce", 0) + 1
+        st.session_state["calc_price_nonce"] = st.session_state.get("calc_price_nonce", 0) + 1
+
+    if not editing:
+        name_nonce = st.session_state.setdefault("calc_name_nonce", 0)
+        price_nonce = st.session_state.setdefault("calc_price_nonce", 0)
+        title = st.text_input(
+            "물건 이름",
+            placeholder="물건 이름",
+            key=f"calc_title_{name_nonce}",
+            label_visibility="collapsed",
+        )
+        price_raw = st.text_input(
+            "가격",
+            placeholder="가격 (예: 4500)",
+            key=f"calc_price_{price_nonce}",
+            label_visibility="collapsed",
+        )
+        category = st.selectbox(
+            "카테고리",
+            EXPENSE_CATEGORIES,
+            key="calc_category_select",
+        )
+        if st.button("추가", type="primary", use_container_width=True, key="calc_add_btn"):
+            name = (title or "").strip()
+            amount = parse_amount(price_raw or "")
+            if not name:
+                st.warning("물건 이름을 입력하세요.")
+            elif amount is None:
+                st.warning("가격을 숫자로 입력하세요.")
+            else:
+                try:
+                    db.add_expense(name, amount, category)
+                    st.session_state[reset_key] = True
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
+
+    if not expenses:
+        st.caption("아직 내역이 없습니다.")
+        return
+
+    for exp in expenses:
+        eid = exp["id"]
+        cat = exp.get("category") or ""
+        amt = int(exp.get("amount") or 0)
+        title = exp.get("title") or ""
+        in_sum = cat in active
+
+        if editing:
+            new_title = st.text_input(
+                "이름",
+                value=title,
+                key=f"calc_edit_title_{eid}",
+                label_visibility="collapsed",
+            )
+            new_price = st.text_input(
+                "가격",
+                value=str(amt),
+                key=f"calc_edit_price_{eid}",
+                label_visibility="collapsed",
+            )
+            cat_index = (
+                EXPENSE_CATEGORIES.index(cat) if cat in EXPENSE_CATEGORIES else 0
+            )
+            new_cat = st.selectbox(
+                "카테고리",
+                EXPENSE_CATEGORIES,
+                index=cat_index,
+                key=f"calc_edit_cat_{eid}",
+            )
+            if st.button("저장", key=f"calc_save_{eid}", use_container_width=True, type="primary"):
+                name = (new_title or "").strip()
+                amount = parse_amount(new_price or "")
+                if not name:
+                    st.warning("물건 이름은 필수입니다.")
+                elif amount is None:
+                    st.warning("가격을 숫자로 입력하세요.")
+                else:
+                    try:
+                        db.update_expense(eid, name, amount, new_cat)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"저장 실패: {e}")
+            if st.button("삭제", key=f"calc_del_{eid}", use_container_width=True):
+                db.delete_expense(eid)
+                st.rerun()
+            st.divider()
+        else:
+            safe_title = html_lib.escape(title)
+            safe_cat = html_lib.escape(cat)
+            muted = "" if in_sum else " muted"
+            st.markdown(
+                f'<div class="jj-calc-item{muted}">'
+                f'<p class="cat">{"합산" if in_sum else "제외"} · {safe_cat}</p>'
+                f'<p class="name">{safe_title}</p>'
+                f'<p class="amt">{format_won(amt)}</p>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+
 def render_category_tools(category: dict) -> None:
     cid = category["id"]
     with st.expander("장소 삭제", expanded=False):
@@ -370,34 +697,51 @@ def main() -> None:
         st.stop()
 
     st.markdown('<p class="jj-brand">jjellys</p>', unsafe_allow_html=True)
-    st.markdown('<p class="jj-sub">가족 구매 리스트</p>', unsafe_allow_html=True)
+    calc_mode = st.session_state.get("calculator_mode", False)
+    st.markdown(
+        f'<p class="jj-sub">{"계산기 모드" if calc_mode else "가족 구매 리스트"}</p>',
+        unsafe_allow_html=True,
+    )
 
     # Secondary actions tucked away (more list space)
     with st.expander("장소 추가 · 설정", expanded=False):
-        with st.form("add_category_form", clear_on_submit=True):
-            new_name = st.text_input(
-                "장소",
-                placeholder="예: 편의점, 마트",
-                label_visibility="collapsed",
-            )
-            submitted = st.form_submit_button("장소 추가", use_container_width=True)
-            if submitted:
-                name = (new_name or "").strip()
-                if not name:
-                    st.warning("이름을 입력하세요.")
-                elif any(c["name"] == name for c in categories):
-                    st.warning("이미 있는 장소입니다.")
-                else:
-                    try:
-                        added = db.add_category(name)
-                        if added:
-                            st.session_state.selected_category = added["name"]
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"추가 실패: {e}")
+        calc_on = st.checkbox(
+            "계산기 모드",
+            key="calculator_mode",
+            help="물건 이름·가격·카테고리를 입력하고 합산합니다.",
+        )
+
+        if not calc_on:
+            with st.form("add_category_form", clear_on_submit=True):
+                new_name = st.text_input(
+                    "장소",
+                    placeholder="예: 편의점, 마트",
+                    label_visibility="collapsed",
+                )
+                submitted = st.form_submit_button("장소 추가", use_container_width=True)
+                if submitted:
+                    name = (new_name or "").strip()
+                    if not name:
+                        st.warning("이름을 입력하세요.")
+                    elif any(c["name"] == name for c in categories):
+                        st.warning("이미 있는 장소입니다.")
+                    else:
+                        try:
+                            added = db.add_category(name)
+                            if added:
+                                st.session_state.selected_category = added["name"]
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"추가 실패: {e}")
         if st.button("나가기", use_container_width=True):
             st.session_state.authenticated = False
+            st.session_state.pop("auth_token", None)
+            clear_login()
             st.rerun()
+
+    if st.session_state.get("calculator_mode", False):
+        render_calculator()
+        st.stop()
 
     if not categories:
         st.info("위에서 장소를 추가하세요. 예: 편의점, 마트")
@@ -424,7 +768,6 @@ def main() -> None:
     category = next(c for c in categories if c["name"] == chosen)
     render_items(category["id"])
     render_category_tools(category)
-
 
 if __name__ == "__main__":
     main()
