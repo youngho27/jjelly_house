@@ -516,14 +516,17 @@ def render_items(category_id: int) -> None:
 
 
 def parse_amount(raw: str) -> int | None:
-    """'1200', '1,200', '1200원' → int. Invalid → None."""
+    """'1200', '1,200', '1200엔' → int. Invalid → None."""
     if raw is None:
         return None
     cleaned = (
         str(raw)
         .strip()
         .replace(",", "")
+        .replace("엔", "")
+        .replace("円", "")
         .replace("원", "")
+        .replace("¥", "")
         .replace(" ", "")
     )
     if not cleaned:
@@ -537,8 +540,8 @@ def parse_amount(raw: str) -> int | None:
     return value
 
 
-def format_won(amount: int | float) -> str:
-    return f"{int(amount):,}원"
+def format_yen(amount: int | float) -> str:
+    return f"{int(amount):,}엔"
 
 
 def render_calculator() -> None:
@@ -568,12 +571,10 @@ def render_calculator() -> None:
     included = [e for e in expenses if e.get("category") in active]
     total = sum(int(e.get("amount") or 0) for e in included)
     st.markdown(
-        f'<p class="jj-total">합계 {format_won(total)}</p>',
+        f'<p class="jj-total">합계 {format_yen(total)}</p>',
         unsafe_allow_html=True,
     )
-    if active:
-        st.caption("선택된 카테고리만 합산 중")
-    else:
+    if not active:
         st.caption("카테고리를 하나 이상 선택하세요.")
 
     edit_key = "calc_edit_mode"
@@ -634,58 +635,20 @@ def render_calculator() -> None:
         amt = int(exp.get("amount") or 0)
         title = exp.get("title") or ""
         in_sum = cat in active
-
+        safe_title = html_lib.escape(title)
+        safe_cat = html_lib.escape(cat)
+        muted = "" if in_sum else " muted"
+        st.markdown(
+            f'<div class="jj-calc-item{muted}">'
+            f'<p class="name">[{safe_cat}] {safe_title}</p>'
+            f'<p class="amt">{format_yen(amt)}</p>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
         if editing:
-            new_title = st.text_input(
-                "이름",
-                value=title,
-                key=f"calc_edit_title_{eid}",
-                label_visibility="collapsed",
-            )
-            new_price = st.text_input(
-                "가격",
-                value=str(amt),
-                key=f"calc_edit_price_{eid}",
-                label_visibility="collapsed",
-            )
-            cat_index = (
-                EXPENSE_CATEGORIES.index(cat) if cat in EXPENSE_CATEGORIES else 0
-            )
-            new_cat = st.selectbox(
-                "카테고리",
-                EXPENSE_CATEGORIES,
-                index=cat_index,
-                key=f"calc_edit_cat_{eid}",
-            )
-            if st.button("저장", key=f"calc_save_{eid}", use_container_width=True, type="primary"):
-                name = (new_title or "").strip()
-                amount = parse_amount(new_price or "")
-                if not name:
-                    st.warning("물건 이름은 필수입니다.")
-                elif amount is None:
-                    st.warning("가격을 숫자로 입력하세요.")
-                else:
-                    try:
-                        db.update_expense(eid, name, amount, new_cat)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"저장 실패: {e}")
             if st.button("삭제", key=f"calc_del_{eid}", use_container_width=True):
                 db.delete_expense(eid)
                 st.rerun()
-            st.divider()
-        else:
-            safe_title = html_lib.escape(title)
-            safe_cat = html_lib.escape(cat)
-            muted = "" if in_sum else " muted"
-            st.markdown(
-                f'<div class="jj-calc-item{muted}">'
-                f'<p class="cat">{"합산" if in_sum else "제외"} · {safe_cat}</p>'
-                f'<p class="name">{safe_title}</p>'
-                f'<p class="amt">{format_won(amt)}</p>'
-                f"</div>",
-                unsafe_allow_html=True,
-            )
 
 
 def render_category_tools(category: dict) -> None:
