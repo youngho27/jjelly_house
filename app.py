@@ -21,6 +21,7 @@ st.set_page_config(
 
 AUTH_COOKIE = "jj_auth"
 AUTH_DAYS = 30
+EXPENSE_TAB = "지출"
 EXPENSE_CATEGORIES = ["식당", "카페", "편의점", "쇼핑1", "쇼핑2"]
 
 st.markdown(
@@ -137,14 +138,28 @@ st.markdown(
         white-space: nowrap !important;
       }
 
-      /* Pills / category chips */
+      /* Pills: one horizontal row (place + calc filters) */
       div[data-testid="stPills"] button,
       [data-testid="stBaseButton-pills"],
       [data-testid="stBaseButton-pillsActive"] {
-        font-size: 1rem !important;
+        font-size: 0.85rem !important;
         font-weight: 700 !important;
-        min-height: 2.4rem !important;
-        padding: 0.35rem 0.85rem !important;
+        min-height: 2.1rem !important;
+        padding: 0.25rem 0.6rem !important;
+        flex-shrink: 0 !important;
+      }
+      div[data-testid="stPills"] > div,
+      div[data-testid="stPills"] [role="group"] {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        gap: 0.25rem !important;
+        max-width: 100% !important;
+      }
+
+      /* Calculator category chips: keep on one horizontal row */
+      .jj-calc-filters {
+        max-width: 100%;
+        overflow-x: auto;
       }
 
       div[data-testid="stCheckbox"] { padding: 0.35rem 0 !important; }
@@ -168,12 +183,19 @@ st.markdown(
         text-decoration: line-through;
         color: #888 !important;
       }
+      /* Settings / 계산기 모드 체크에는 취소선 적용 안 함 */
+      div[data-testid="stExpander"] div[data-testid="stCheckbox"]:has(input:checked) label p {
+        text-decoration: none !important;
+        color: var(--ink) !important;
+      }
       div[data-testid="stCheckbox"] input[type="checkbox"] {
         width: 1.25rem !important;
         height: 1.25rem !important;
         accent-color: var(--accent);
         flex-shrink: 0;
       }
+
+      /* Calculator category chips: keep on one horizontal row — handled by global pills CSS */
 
       /* Never force side-by-side — prevents buttons escaping off-screen */
       div[data-testid="stHorizontalBlock"] {
@@ -520,17 +542,18 @@ def format_won(amount: int | float) -> str:
 
 
 def render_calculator() -> None:
-    st.markdown("##### 계산기")
-
-    # Category filters for sum (checked = include in total)
-    st.caption("합산에 포함할 카테고리")
-    active: list[str] = []
-    for cat in EXPENSE_CATEGORIES:
-        key = f"calc_sum_{cat}"
-        if key not in st.session_state:
-            st.session_state[key] = True
-        if st.checkbox(cat, key=key):
-            active.append(cat)
+    st.caption("합산에 포함할 카테고리 (탭해서 켜고 끄기)")
+    st.markdown('<div class="jj-calc-filters">', unsafe_allow_html=True)
+    selected = st.pills(
+        "합산 카테고리",
+        EXPENSE_CATEGORIES,
+        selection_mode="multi",
+        default=EXPENSE_CATEGORIES,
+        label_visibility="collapsed",
+        key="calc_sum_pills",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    active = list(selected) if selected else []
 
     try:
         expenses = db.list_expenses()
@@ -549,9 +572,9 @@ def render_calculator() -> None:
         unsafe_allow_html=True,
     )
     if active:
-        st.caption("체크된 카테고리만 합산 중")
+        st.caption("선택된 카테고리만 합산 중")
     else:
-        st.caption("카테고리를 하나 이상 체크하세요.")
+        st.caption("카테고리를 하나 이상 선택하세요.")
 
     edit_key = "calc_edit_mode"
     editing = st.session_state.get(edit_key, False)
@@ -697,64 +720,43 @@ def main() -> None:
         st.stop()
 
     st.markdown('<p class="jj-brand">jjellys</p>', unsafe_allow_html=True)
-    calc_mode = st.session_state.get("calculator_mode", False)
-    st.markdown(
-        f'<p class="jj-sub">{"계산기 모드" if calc_mode else "가족 구매 리스트"}</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<p class="jj-sub">가족 구매 리스트</p>', unsafe_allow_html=True)
 
-    # Secondary actions tucked away (more list space)
     with st.expander("장소 추가 · 설정", expanded=False):
-        calc_on = st.checkbox(
-            "계산기 모드",
-            key="calculator_mode",
-            help="물건 이름·가격·카테고리를 입력하고 합산합니다.",
-        )
+        with st.form("add_category_form", clear_on_submit=True):
+            new_name = st.text_input(
+                "장소",
+                placeholder="예: 편의점, 마트",
+                label_visibility="collapsed",
+            )
+            submitted = st.form_submit_button("장소 추가", use_container_width=True)
+            if submitted:
+                name = (new_name or "").strip()
+                if not name:
+                    st.warning("이름을 입력하세요.")
+                elif name == EXPENSE_TAB:
+                    st.warning(f"'{EXPENSE_TAB}'은 예약된 이름입니다.")
+                elif any(c["name"] == name for c in categories):
+                    st.warning("이미 있는 장소입니다.")
+                else:
+                    try:
+                        added = db.add_category(name)
+                        if added:
+                            st.session_state.selected_category = added["name"]
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
 
-        if not calc_on:
-            with st.form("add_category_form", clear_on_submit=True):
-                new_name = st.text_input(
-                    "장소",
-                    placeholder="예: 편의점, 마트",
-                    label_visibility="collapsed",
-                )
-                submitted = st.form_submit_button("장소 추가", use_container_width=True)
-                if submitted:
-                    name = (new_name or "").strip()
-                    if not name:
-                        st.warning("이름을 입력하세요.")
-                    elif any(c["name"] == name for c in categories):
-                        st.warning("이미 있는 장소입니다.")
-                    else:
-                        try:
-                            added = db.add_category(name)
-                            if added:
-                                st.session_state.selected_category = added["name"]
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"추가 실패: {e}")
-        if st.button("나가기", use_container_width=True):
-            st.session_state.authenticated = False
-            st.session_state.pop("auth_token", None)
-            clear_login()
-            st.rerun()
+    # Fixed 지출 tab + user shopping places
+    place_names = [c["name"] for c in categories if c["name"] != EXPENSE_TAB]
+    tab_names = [EXPENSE_TAB] + place_names
 
-    if st.session_state.get("calculator_mode", False):
-        render_calculator()
-        st.stop()
+    if st.session_state.get("selected_category") not in tab_names:
+        st.session_state.selected_category = place_names[0] if place_names else EXPENSE_TAB
 
-    if not categories:
-        st.info("위에서 장소를 추가하세요. 예: 편의점, 마트")
-        st.stop()
-
-    names = [c["name"] for c in categories]
-    if st.session_state.get("selected_category") not in names:
-        st.session_state.selected_category = names[0]
-
-    # Only one category rendered → much faster / lighter on phone than st.tabs
     chosen = st.pills(
         "장소",
-        names,
+        tab_names,
         selection_mode="single",
         default=st.session_state.selected_category,
         label_visibility="collapsed",
@@ -765,9 +767,18 @@ def main() -> None:
     else:
         chosen = st.session_state.selected_category
 
+    if chosen == EXPENSE_TAB:
+        render_calculator()
+        return
+
+    if not place_names:
+        st.info("위에서 구매 장소를 추가하세요. 예: 편의점, 마트")
+        return
+
     category = next(c for c in categories if c["name"] == chosen)
     render_items(category["id"])
     render_category_tools(category)
+
 
 if __name__ == "__main__":
     main()
